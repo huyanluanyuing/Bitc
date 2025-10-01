@@ -6,7 +6,9 @@ import org.apache.log4j.Level;
 
 import org.apache.thrift.TProcessorFactory;
 import org.apache.thrift.protocol.TBinaryProtocol;
+import org.apache.thrift.server.THsHaServer;
 import org.apache.thrift.server.TSimpleServer;
+import org.apache.thrift.transport.TNonblockingServerSocket;
 import org.apache.thrift.transport.TServerSocket;
 import org.apache.thrift.transport.layered.TFramedTransport;
 
@@ -45,12 +47,12 @@ public class FEServer {
 
         // 使用 FEService.Processor
         MiningPoolService.Processor processor = new MiningPoolService.Processor<MiningPoolService.Iface>(handler);
-        TServerSocket socket = new TServerSocket(port);
-        TSimpleServer.Args sargs = new TSimpleServer.Args(socket);
+        TNonblockingServerSocket socket = new TNonblockingServerSocket(port);
+        THsHaServer.Args sargs = new THsHaServer.Args(socket);
         sargs.protocolFactory(new TBinaryProtocol.Factory());
         sargs.transportFactory(new TFramedTransport.Factory());
         sargs.processorFactory(new TProcessorFactory(processor));
-        TSimpleServer server = new TSimpleServer(sargs);
+        THsHaServer server = new THsHaServer(sargs);
 
         log.info("FE Server ready and waiting for:");
         log.info("  1. BE servers to register");

@@ -22,19 +22,6 @@ public class MiningPoolServiceHandler implements MiningPoolService.Iface {
     private volatile AtomicBoolean cancelled = new AtomicBoolean(false);
     private volatile AtomicLong foundNonce = new AtomicLong(-1);
 
-    // 全局共享的停止检查器（由 FE 设置）
-    private volatile GlobalStopChecker globalStopChecker = null;
-
-    // 全局停止检查器接口
-    public interface GlobalStopChecker {
-        boolean shouldStop();
-        long getFoundNonce();
-    }
-
-    // 设置全局停止检查器
-    public void setGlobalStopChecker(GlobalStopChecker checker) {
-        this.globalStopChecker = checker;
-    }
     @Override
     public long mineBlock(int version, java.nio.ByteBuffer prevBlockHash, java.nio.ByteBuffer merkleRootHash, long time, long target) throws IllegalArgument, org.apache.thrift.TException {
         return 43;
@@ -101,12 +88,15 @@ public class MiningPoolServiceHandler implements MiningPoolService.Iface {
                 futures.add(future);
             }
 
-            // 等待任何一个线程找到结果
-            while (foundNonce.get() == -1 && !shouldStopMining()) {
+            while (foundNonce.get() == -1 && !cancelled.get()) { // foundNonce=-1 没找到cancelled
+                int doneSize = 0;
                 for (Future<Long> future : futures) {
                     if (future.isDone()) {
+                        doneSize++;
                         try {
+                            // 返回运行结果
                             long nonce = future.get(10, TimeUnit.MILLISECONDS);
+                            // 找到
                             if (nonce != -1) {
                                 foundNonce.set(nonce);
                                 log.info("Found nonce: " + nonce);
@@ -119,31 +109,21 @@ public class MiningPoolServiceHandler implements MiningPoolService.Iface {
                         }
                     }
                 }
-
-                // 检查全局停止信号
-                if (shouldStopMining()) {
-                    if (globalStopChecker != null) {
-                        long globalNonce = globalStopChecker.getFoundNonce();
-                        if (globalNonce != -1) {
-                            log.info("Stopping: another node found nonce " + globalNonce);
-                            foundNonce.set(globalNonce);
-                        }
-                    }
+                // 全部线程结束了
+                if (doneSize == futures.size()) {
                     break;
                 }
-
                 if (foundNonce.get() == -1) {
                     Thread.sleep(10);
                 }
             }
-
             // 取消所有线程
             cancelled.set(true);
             for (Future<Long> future : futures) {
                 future.cancel(true);
             }
 
-            if (shouldStopMining() && foundNonce.get() == -1) {
+            if (foundNonce.get() == -1) {
                 throw new IllegalArgument("Mining cancelled");
             }
 
@@ -158,22 +138,6 @@ public class MiningPoolServiceHandler implements MiningPoolService.Iface {
             executor.shutdownNow();
         }
     }
-
-    // 检查是否应该停止（本地 + 全局）
-    private boolean shouldStopMining() {
-        // 检查本地取消
-        if (cancelled.get()) {
-            return true;
-        }
-
-        // 检查全局停止信号
-        if (globalStopChecker != null && globalStopChecker.shouldStop()) {
-            return true;
-        }
-
-        return false;
-    }
-
     // 单个线程在范围内挖矿
     private long mineInRange(int version, Sha256Hash prevHash, Sha256Hash merkleHash,
                              Instant timestamp, Difficulty difficulty,
@@ -187,7 +151,7 @@ public class MiningPoolServiceHandler implements MiningPoolService.Iface {
         long nonce = startNonce;
         long lastLog = System.currentTimeMillis();
 
-        while (nonce < endNonce && !shouldStopMining() && foundNonce.get() == -1) {
+        while (nonce < endNonce  && foundNonce.get() == -1 && !cancelled.get()) {
             block.setNonce(nonce);
 
             if (difficulty.isMetByWork(block.getHash())) {
@@ -209,7 +173,7 @@ public class MiningPoolServiceHandler implements MiningPoolService.Iface {
             }
         }
 
-        if (shouldStopMining()) {
+        if (cancelled.get()) {
             log.info("Thread[" + threadId + "] stopped by global signal");
         } else if (foundNonce.get() != -1) {
             log.info("Thread[" + threadId + "] stopped (another thread found nonce)");
@@ -222,11 +186,11 @@ public class MiningPoolServiceHandler implements MiningPoolService.Iface {
 
     @Override
     public void cancel() {
-        log.info("Cancel request received");
+        log.info("Cancel being called from FEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE");
         cancelled.set(true);
     }
     @Override
     public  void registerBE(String host, int port, int numCores) throws IllegalArgument, TException {
-        
+
     }
 }

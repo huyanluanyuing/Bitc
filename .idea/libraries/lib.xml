@@ -1,0 +1,25 @@
+<component name="libraryTable">
+  <library name="lib">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/lib/commons-codec-1.3.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/slf4j-log4j12-1.5.6.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/guava-33.4.8-jre.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/bitcoinj-core-0.18-SNAPSHOT.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/javax.annotation-api-1.3.2.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/commons-logging-1.1.1.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/js-1.7R2.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/httpclient-4.0.1.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/httpcore-4.0.1.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/log4j-1.2.14.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/mime-util-2.1.3.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/jcommander-1.13.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/bitcoinj-base-0.18-SNAPSHOT.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/jslint4java-ant-1.4.6.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/jslint4java-1.4.6.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/libthrift-0.22.0.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/slf4j-api-1.5.6.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

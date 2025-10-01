@@ -22,15 +22,14 @@ import org.apache.thrift.transport.layered.TFramedTransport;
 public class FEServiceHandler implements MiningPoolService.Iface {
 
     private static Logger log = Logger.getLogger(FEServiceHandler.class.getName());
+    //本地挖矿
+    MiningPoolServiceHandler localHandler;
 
     // BE 服务器信息列表
     private final List<BEServerInfo> beServers;
 
     // FE 自己的核心数
     private final int feCores;
-
-    // 全局停止协调器
-    private final GlobalMiningCoordinator coordinator;
 
     // 内部类：BE 服务器信息
     private static class BEServerInfo {
@@ -49,37 +48,12 @@ public class FEServiceHandler implements MiningPoolService.Iface {
             return host + ":" + port + "(" + numCores + " cores)";
         }
     }
-
-    // 全局挖矿协调器
-    private class GlobalMiningCoordinator implements MiningPoolServiceHandler.GlobalStopChecker {
-        private final AtomicBoolean globalStop = new AtomicBoolean(false);
-        private final AtomicLong globalFoundNonce = new AtomicLong(-1);
-
-        public void reset() {
-            globalStop.set(false);
-            globalFoundNonce.set(-1);
-        }
-
-        public void setFound(long nonce) {
-            globalFoundNonce.compareAndSet(-1, nonce);
-            globalStop.set(true);
-        }
-
-        @Override
-        public boolean shouldStop() {
-            return globalStop.get();
-        }
-
-        @Override
-        public long getFoundNonce() {
-            return globalFoundNonce.get();
-        }
-    }
+    private final AtomicBoolean globalStop = new AtomicBoolean(false);
+    private final AtomicLong globalFoundNonce = new AtomicLong(-1);
 
     public FEServiceHandler(int feCores) {
         this.beServers = new ArrayList<>();
         this.feCores = feCores;
-        this.coordinator = new GlobalMiningCoordinator();
         log.info("FE initialized with " + feCores + " cores");
     }
 
@@ -111,12 +85,13 @@ public class FEServiceHandler implements MiningPoolService.Iface {
         log.info("Received mining request from client");
 
         // Reset coordinator
-        coordinator.reset();
+        globalStop.set(false);
+        globalFoundNonce.set(-1);
 
         // Compute total cores and select up to 2 BEs
         int totalCores = feCores;
         List<BEServerInfo> availableBEs = new ArrayList<>();
-
+        // 得到be
         synchronized (this) {
             int numBEs = Math.min(2, beServers.size());
             for (int i = 0; i < numBEs; i++) {
@@ -128,7 +103,7 @@ public class FEServiceHandler implements MiningPoolService.Iface {
         log.info("Total cores: " + totalCores + " (FE: " + feCores + ", BEs: " + (totalCores - feCores) + ")");
 
         // Define search range (note: for local testing you may want to reduce this)
-        long totalRange = 100000000L; // <= Integer.MAX_VALUE to avoid int overflow issues in testing
+        long totalRange = 1000000000L; // <= Integer.MAX_VALUE to avoid int overflow issues in testing
         long rangePerCore = Math.max(1L, totalRange / Math.max(1, totalCores));
 
         // Partition ranges
@@ -159,7 +134,9 @@ public class FEServiceHandler implements MiningPoolService.Iface {
                             feCores);
 
                     if (nonce != -1) {
-                        coordinator.setFound(nonce);
+                        globalFoundNonce.set(nonce);
+                        globalStop.set(true);
+                        cancel();
                         log.info("★★★ FE found nonce: " + nonce + " ★★★");
                     }
                     return nonce;
@@ -201,15 +178,18 @@ public class FEServiceHandler implements MiningPoolService.Iface {
                                 beEnd, beInfo.numCores);
 
                         if (nonce != -1) {
-                            coordinator.setFound(nonce);
+                            globalFoundNonce.set(nonce);
+                            globalStop.set(true);
+                            cancel();
                             long elapsed = System.currentTimeMillis() - startTime;
                             log.info("★★★ BE[" + beIndex + "] found nonce: " + nonce + " in " + elapsed + "ms ★★★");
+                            return nonce;
                         }
 
                         return nonce;
 
                     } catch (Exception e) {
-                        if (!coordinator.shouldStop()) {
+                        if (!globalStop.get()) {
                             log.error("BE[" + beIndex + "] failed: " + e.getMessage());
                         }
                         return -1L;
@@ -233,52 +213,16 @@ public class FEServiceHandler implements MiningPoolService.Iface {
             long result = -1;
             long startTime = System.currentTimeMillis();
 
-            while (!coordinator.shouldStop() && result == -1) {
-                for (int i = 0; i < futures.size(); i++) {
-                    Future<Long> future = futures.get(i);
-                    if (future != null && future.isDone()) {
-                        try {
-                            long nonce = future.get(10, TimeUnit.MILLISECONDS);
-                            if (nonce != -1) {
-                                result = nonce;
-                                coordinator.setFound(nonce);
-                                break;
-                            }
-                        } catch (ExecutionException e) {
-                            // task failed — ignore here
-                        } catch (TimeoutException e) {
-                            // nothing
-                        }
-                    }
-                }
-                if (result == -1) {
-                    Thread.sleep(50);
-                }
-            }
-
-            // If coordinator already set found, use it
-            if (result == -1) {
-                result = coordinator.getFoundNonce();
-            }
-
+            while(globalFoundNonce.get()==-1 && !globalStop.get());
+            result = globalFoundNonce.get();
             long elapsed = System.currentTimeMillis() - startTime;
-
             log.info("========================================");
             log.info("✓ Mining completed in " + elapsed + "ms");
             log.info("  Found nonce: " + result);
             log.info("========================================");
-
             // Notify all BE to stop
             log.info("Sending cancel to all BE servers...");
-            for (MiningPoolService.Client client : clients) {
-                try {
-                    if (client.getInputProtocol().getTransport().isOpen()) {
-                        client.cancel();
-                    }
-                } catch (Exception e) {
-                    // ignore errors while notifying
-                }
-            }
+
 
             // Cancel remaining futures
             for (Future<Long> future : futures) {
@@ -286,11 +230,9 @@ public class FEServiceHandler implements MiningPoolService.Iface {
                     future.cancel(true);
                 }
             }
-
-            if (result == -1) {
+            if (globalFoundNonce.get() == -1) {
                 throw new IllegalArgument("Mining failed: no nonce found");
             }
-
             return result;
 
         } catch (IllegalArgument e) {
@@ -300,7 +242,6 @@ public class FEServiceHandler implements MiningPoolService.Iface {
             throw new IllegalArgument("Mining failed: " + e.getMessage());
         } finally {
             executor.shutdownNow();
-
             for (MiningPoolService.Client client : clients) {
                 try {
                     if (client.getInputProtocol().getTransport().isOpen()) {
@@ -313,33 +254,18 @@ public class FEServiceHandler implements MiningPoolService.Iface {
         }
     }
 
-    @Override
-    public void cancel() {
-        log.info("Cancel request received at FE");
-        // mark coordinator as stopped; using setFound(-1) would set stop but also overwrite found nonce — keep stop only:
-        coordinator.reset();
-        // set a stop flag to interrupt running tasks (use setFound with -2 to indicate client-cancel if you want)
-        // simpler: call coordinator.setFound(-1) to signal stop (it sets globalStop true)
-        coordinator.setFound(-1);
-    }
-
     // FE 本地挖矿
     private long mineLocally(int version, ByteBuffer prevBlockHash, ByteBuffer merkleRootHash, long time, long target,
-            long startNonce, long endNonce, int numThreads) throws IllegalArgument, TException {
+                             long startNonce, long endNonce, int numThreads) throws IllegalArgument, TException {
         log.info("FE local mining with " + numThreads + " threads in range [" + startNonce + ", " + endNonce + ")");
-
         // 为本地挖矿创建独立副本
         ByteBuffer prevHashCopy = cloneBufferSafe(prevBlockHash);
         ByteBuffer merkleCopy = cloneBufferSafe(merkleRootHash);
-
         // 创建本地 Handler 并设置全局协调器
-        MiningPoolServiceHandler localHandler = new MiningPoolServiceHandler();
-        localHandler.setGlobalStopChecker(coordinator);
-
+        localHandler = new MiningPoolServiceHandler();
         return localHandler.mineBlockInRange(version, prevHashCopy, merkleCopy, time, target, startNonce, endNonce,
                 numThreads);
     }
-
     // 连接到 BE
     private MiningPoolService.Client connectToBE(String host, int port) throws TException {
         TSocket sock = new TSocket(host, port);
@@ -350,7 +276,6 @@ public class FEServiceHandler implements MiningPoolService.Iface {
         transport.open();
         return client;
     }
-
     // 克隆 ByteBuffer（线程安全，完全独立的副本，假设 input is exactly 32 bytes long）
     private ByteBuffer cloneBufferSafe(ByteBuffer original) {
         byte[] data;
@@ -363,23 +288,25 @@ public class FEServiceHandler implements MiningPoolService.Iface {
         }
         return ByteBuffer.wrap(data);
     }
-
-    // 克隆 ByteBuffer（线程安全）
-    @SuppressWarnings("unused")
-    private synchronized ByteBuffer cloneBuffer(ByteBuffer original) {
-        int originalPosition = original.position();
-        original.rewind();
-        ByteBuffer clone = ByteBuffer.allocate(original.remaining());
-        clone.put(original);
-        clone.flip();
-        original.position(originalPosition);
-        return clone;
-    }
     @Override
     public long mineBlockInRange(int version, ByteBuffer prevBlockHash, ByteBuffer merkleRootHash,
                                  long time, long target, long startNonce, long endNonce, int numThreads)
             throws IllegalArgument, org.apache.thrift.TException {
-                return -1;
-            }
+        return -1;
+    }
+    @Override
+    public void cancel() throws TException {
+        log.info("Cancel request send from FE");
+        localHandler.cancel();
 
+        for (BEServerInfo be:beServers){
+            TSocket sock = new TSocket(be.host, be.port);
+            sock.setTimeout(300000);
+            TTransport transport = new TFramedTransport(sock);
+            TProtocol protocol = new TBinaryProtocol(transport);
+            MiningPoolService.Client client = new MiningPoolService.Client(protocol);
+            transport.open();
+            client.cancel();
+        }
+    }
 }

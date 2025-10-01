@@ -7,7 +7,9 @@ import org.apache.log4j.Level;
 import org.apache.thrift.TProcessorFactory;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TProtocol;
+import org.apache.thrift.server.THsHaServer;
 import org.apache.thrift.server.TSimpleServer;
+import org.apache.thrift.transport.TNonblockingServerSocket;
 import org.apache.thrift.transport.TServerSocket;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
@@ -52,12 +54,12 @@ public class BEServer {
 
 		// 先启动 BE 服务器（在新线程中）
 		MiningPoolService.Processor processor = new MiningPoolService.Processor<MiningPoolService.Iface>(new MiningPoolServiceHandler());
-		TServerSocket socket = new TServerSocket(portBE);
-		TSimpleServer.Args sargs = new TSimpleServer.Args(socket);
+		TNonblockingServerSocket socket = new TNonblockingServerSocket(portBE);
+		THsHaServer.Args sargs = new THsHaServer.Args(socket);
 		sargs.protocolFactory(new TBinaryProtocol.Factory());
 		sargs.transportFactory(new TFramedTransport.Factory());
 		sargs.processorFactory(new TProcessorFactory(processor));
-		final TSimpleServer server = new TSimpleServer(sargs);
+		final THsHaServer server = new THsHaServer(sargs);
 
 		// 在新线程中启动服务器
 		Thread serverThread = new Thread(new Runnable() {
