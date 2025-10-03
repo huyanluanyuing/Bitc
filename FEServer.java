@@ -33,7 +33,7 @@ public class FEServer {
 
         int port = Integer.parseInt(args[0]);
         Runtime runtime = Runtime.getRuntime();
-		int numCores = runtime.availableProcessors();
+        int numCores = runtime.availableProcessors();
 
         log.info("========================================");
         log.info("Launching FE server");

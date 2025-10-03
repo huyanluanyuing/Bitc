@@ -71,73 +71,41 @@ public class MiningPoolServiceHandler implements MiningPoolService.Iface {
         List<Future<Long>> futures = new ArrayList<>();
 
         try {
-            // 为每个线程分配搜索范围
+            // 启动工作线程
             for (int i = 0; i < numThreads; i++) {
-                final long threadStart = startNonce + i * rangePerThread;
-                final long threadEnd = (i == numThreads - 1) ? endNonce : (threadStart + rangePerThread);
+                final long threadStart = startNonce + i * (endNonce - startNonce) / numThreads;
+                final long threadEnd = (i == numThreads - 1) ? endNonce : (threadStart + (endNonce - startNonce) / numThreads);
                 final int threadId = i;
 
-                Future<Long> future = executor.submit(new Callable<Long>() {
-                    @Override
-                    public Long call() throws Exception {
-                        return mineInRange(version, prevHash, merkleHash, timestamp, difficulty,
-                                threadStart, threadEnd, threadId);
-                    }
-                });
-
-                futures.add(future);
+                futures.add(executor.submit(() -> mineInRange(version, prevHash, merkleHash, timestamp, difficulty,
+                        threadStart, threadEnd, threadId)));
             }
 
-            while (foundNonce.get() == -1 && !cancelled.get()) { // foundNonce=-1 没找到cancelled
-                int doneSize = 0;
-                for (Future<Long> future : futures) {
-                    if (future.isDone()) {
-                        doneSize++;
-                        try {
-                            // 返回运行结果
-                            long nonce = future.get(10, TimeUnit.MILLISECONDS);
-                            // 找到
-                            if (nonce != -1) {
-                                foundNonce.set(nonce);
-                                log.info("Found nonce: " + nonce);
-                                break;
-                            }
-                        } catch (ExecutionException e) {
-                            log.warn("Thread failed: " + e.getMessage());
-                        } catch (TimeoutException e) {
-                            // 继续等待
-                        }
-                    }
-                }
-                // 全部线程结束了
-                if (doneSize == futures.size()) {
-                    break;
-                }
-                if (foundNonce.get() == -1) {
-                    Thread.sleep(10);
+            // 等待结果
+            while (foundNonce.get() == -1 && !cancelled.get()) {
+                try {
+                    Thread.sleep(20); // 🔑 防止死循环占满CPU
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
                 }
             }
-            // 取消所有线程
-            cancelled.set(true);
-            for (Future<Long> future : futures) {
-                future.cancel(true);
+
+            // 取消其他线程
+            for (Future<Long> f : futures) {
+                f.cancel(true);
             }
 
-            if (foundNonce.get() == -1) {
-                throw new IllegalArgument("Mining cancelled");
+            if (cancelled.get()) {
+                log.info("Mining was cancelled");
+                throw new IllegalArgument("Mining cancelled by FE/Client");
             }
-
             return foundNonce.get();
 
-        } catch (IllegalArgument e) {
-            throw e;
-        } catch (Exception e) {
-            log.error("Mining failed: " + e.getMessage(), e);
-            throw new IllegalArgument("Mining failed: " + e.getMessage());
         } finally {
             executor.shutdownNow();
         }
     }
+
     // 单个线程在范围内挖矿
     private long mineInRange(int version, Sha256Hash prevHash, Sha256Hash merkleHash,
                              Instant timestamp, Difficulty difficulty,

@@ -213,7 +213,11 @@ public class FEServiceHandler implements MiningPoolService.Iface {
             long result = -1;
             long startTime = System.currentTimeMillis();
 
-            while(globalFoundNonce.get()==-1 && !globalStop.get());
+            // 等待直到找到 nonce 或被停止
+            while (!globalStop.get()) {
+                Thread.sleep(20); // 🔑 加一个 sleep 防止卡死
+            }
+
             result = globalFoundNonce.get();
             long elapsed = System.currentTimeMillis() - startTime;
             log.info("========================================");
@@ -296,9 +300,9 @@ public class FEServiceHandler implements MiningPoolService.Iface {
     }
     @Override
     public void cancel() throws TException {
+        globalStop.set(true);
         log.info("Cancel request send from FE");
         localHandler.cancel();
-
         for (BEServerInfo be:beServers){
             TSocket sock = new TSocket(be.host, be.port);
             sock.setTimeout(300000);
@@ -307,6 +311,7 @@ public class FEServiceHandler implements MiningPoolService.Iface {
             MiningPoolService.Client client = new MiningPoolService.Client(protocol);
             transport.open();
             client.cancel();
+            transport.close();
         }
     }
 }
