@@ -1,6 +1,8 @@
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.nio.ByteBuffer;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TProtocol;
@@ -12,54 +14,56 @@ import org.apache.thrift.transport.layered.TFramedTransport;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 
+// 假设这些是项目依赖，用于生成和验证比特币区块头
 import org.bitcoinj.base.Difficulty;
 import org.bitcoinj.base.Sha256Hash;
 import org.bitcoinj.core.Block;
 import org.bitcoinj.core.Transaction;
 
+
 public class Client {
+
+	private static final int TOTAL_RUNS = 500;
+
+	private static final String DEFAULT_HEX_TARGET = "1e290000";
+
 	public static void main(String[] args) {
-		if (args.length != 2) {
-			System.err.println("Usage: java Client host port");
+		if (args.length < 2 || args.length > 3) {
+			System.err.println("Usage: java Client <host> <port> [hex_target]");
+			System.err.println("Example: java Client 127.0.0.1 9090 " + DEFAULT_HEX_TARGET);
 			System.exit(-1);
 		}
 
+		String host = args[0];
+		int port = Integer.parseInt(args[1]);
+		String hexTarget = (args.length == 3) ? args[2] : DEFAULT_HEX_TARGET;
+		long compactTarget = Long.parseLong(hexTarget, 16);
+
+
+		long totalTimeNanos = 0;
+		int successfulRuns = 0;
+		Random random = new Random();
+
+		TTransport transport = null;
+
 		try {
-			// 建立连接
-			TSocket sock = new TSocket(args[0], Integer.parseInt(args[1]));
-			TTransport transport = new TFramedTransport(sock);
+
+			TSocket sock = new TSocket(host, port);
+
+			transport = new TFramedTransport(sock);
 			TProtocol protocol = new TBinaryProtocol(transport);
 			MiningPoolService.Client client = new MiningPoolService.Client(protocol);
 			transport.open();
 
+			System.out.println("Connected to FE server at " + host + ":" + port);
+			System.out.println("Starting " + TOTAL_RUNS + " mining tasks with Target: " + hexTarget);
 
-			// 启动 cancel 线程：15s 后调用一次 cancel
-			Thread cancelThread = new Thread(() -> {
-				try {
-					while(true){
-						Thread.sleep(15000);
-						try (TSocket cancelSock = new TSocket(args[0], Integer.parseInt(args[1]))) {
-							TTransport cancelTransport = new TFramedTransport(cancelSock);
-							TProtocol cancelProtocol = new TBinaryProtocol(cancelTransport);
-							MiningPoolService.Client cancelClient = new MiningPoolService.Client(cancelProtocol);
-							cancelTransport.open();
-							cancelClient.cancel();
-							System.out.println("[CancelThread] Sending cancel()1111111111111111111111111");
-							cancelTransport.close();
-						}
-					}
-				} catch (Exception e) {
-					e.printStackTrace();
-				}
-			});
-			cancelThread.start(); // 启动线程
 
-			// 运行 10 次挖矿任务
-			for (int i = 1; i <= 10; i++) {
-				System.out.println("[Main] Starting mineBlock #" + i);
+			for (int i = 1; i <= TOTAL_RUNS; i++) {
+				//System.out.println("[Main] Starting mineBlock #" + i);
+
 
 				int version = 1;
-				Random random = new Random();
 				byte[] bytes1 = new byte[32];
 				random.nextBytes(bytes1);
 				Sha256Hash prevBlockHash = Sha256Hash.wrap(bytes1);
@@ -69,45 +73,82 @@ public class Client {
 				Sha256Hash merkleRootHash = Sha256Hash.wrap(bytes2);
 
 				Instant time = Instant.now().truncatedTo(ChronoUnit.SECONDS);
-
-				// 难度
-				String hexTarget = "1d7fffff";
-				long compactTarget = Long.parseLong(hexTarget, 16);
 				Difficulty difficulty = Difficulty.ofCompact(compactTarget);
 
-				List<Transaction> txns = null;
-				Block b = new Block(version, prevBlockHash, merkleRootHash, time, difficulty, 0, txns);
-				System.out.println("[Main] Block pre-check:\n" + b);
 
 				ByteBuffer buf1 = ByteBuffer.wrap(bytes1);
 				ByteBuffer buf2 = ByteBuffer.wrap(bytes2);
 
-				// 挖矿请求
+
+				List<Transaction> txns = new ArrayList<>();
+				Block b = new Block(version, prevBlockHash, merkleRootHash, time, difficulty, 0, txns);
+				// -----------------------------
+
 				long nonce = -1;
+				long startTime = System.nanoTime();
+
 				try {
+
 					nonce = client.mineBlock(version, buf1, buf2, time.getEpochSecond(), difficulty.compact());
-					System.out.println("[Main] mineBlock #" + i + " returned nonce = " + nonce);
+					long endTime = System.nanoTime();
+
+
+					if (nonce != -1) {
+						totalTimeNanos += (endTime - startTime);
+						successfulRuns++;
+
+
+						b.setNonce(nonce);
+						if (difficulty.isMetByWork(b.getHash())) {
+							// System.out.println("[Main] ✅ Nonce " + nonce + " found and verified.");
+						} else {
+							System.out.println("[Main] ❌ Nonce " + nonce + " found but FAILED verification: hash > target.");
+						}
+					} else {
+						// System.out.println("[Main] mineBlock #" + i + " returned nonce = -1 (not found/cancelled).");
+					}
+
+				} catch (TException e) {
+					System.err.println("[Main] RPC call #" + i + " failed (TException): " + e.getMessage());
 				} catch (Exception e) {
-					System.out.println("[Main] mineBlock #" + i + " failed: " + e.getMessage());
-					continue;
+					System.err.println("[Main] RPC call #" + i + " failed (Exception): " + e.getMessage());
 				}
 
-				b.setNonce(nonce);
-				System.out.println("[Main] hash = " + b.getHash());
-				System.out.println("[Main] target = " + difficulty.toIntegerString());
-
-				if (difficulty.isMetByWork(b.getHash())) {
-					System.out.println("[Main] ✅ hash <= target (valid)");
-				} else {
-					System.out.println("[Main] ❌ hash > target (invalid)");
+				if (i % 10 == 0) {
+					System.out.println("" + (i * 100 / TOTAL_RUNS) + "% complete (" + successfulRuns + " successful)");
 				}
-
-				System.out.println();
 			}
 
-			transport.close();
 		} catch (TException x) {
+			System.err.println("Fatal TException: Could not connect or transport error.");
 			x.printStackTrace();
+		} finally {
+
+			if (transport != null) {
+				transport.close();
+			}
 		}
+
+
+		System.out.println("\n=================================================");
+		System.out.println("(Target: " + hexTarget + "):");
+		System.out.println("" + TOTAL_RUNS);
+		System.out.println("" + successfulRuns);
+
+		if (successfulRuns > 0) {
+			long totalTimeMs = totalTimeNanos / 1_000_000;
+
+
+			float throughputBlocksPerSecond = (float) successfulRuns * 1000f / totalTimeMs;
+
+
+			float averageLatencyMs = (float) totalTimeMs / successfulRuns;
+
+			System.out.printf("Throughput (blocks/s) for %d successful runs: %.3f\n", successfulRuns, throughputBlocksPerSecond);
+			System.out.printf("Latency (ms/block)      for %d successful runs: %.3f\n", successfulRuns, averageLatencyMs);
+		} else {
+			System.out.println("");
+		}
+		System.out.println("=================================================");
 	}
 }
