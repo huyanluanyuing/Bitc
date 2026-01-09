@@ -43,14 +43,3 @@ The system follows a 3-tier distributed architecture:
 * **Middleware**: Apache Thrift (RPC Framework)
 * **Concurrency**: Java Thread Pool & Synchronization
 * **Build Tool**: Bash / Shell Scripting
-
-## 🚀 Getting Started
-
-### Prerequisites
-* Java JDK 21
-* Apache Thrift Compiler
-
-### Build
-Compile the project using the provided build script:
-```bash
-./build.sh
